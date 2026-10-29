@@ -29,7 +29,6 @@ targetCompatibility = 1.8
 
 repositories {
     mavenCentral()
-    jcenter()
 }
 
 dependencies {
@@ -57,7 +56,7 @@ dependencies {
     compile 'org.hibernate:hibernate-java8'
     compile 'org.hibernate:hibernate-spatial:5.0.11.Final'
     compile 'com.bedatadriven:jackson-datatype-jts:2.2'
-    compile group: 'net.sf.ehcache', name: 'ehcache', version: '2.4.3'
+    compile group: 'net.sf.ehcache', name: 'ehcache'
     compile group: 'org.hibernate', name: 'hibernate-ehcache', version: '5.0.12.Final'
 
     compile 'org.joda:joda-money:0.12'
