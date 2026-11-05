@@ -1,5 +1,5 @@
 # Testing Guide
-This guide is intended to layout the general automated test strategy for OpenLMIS.
+This guide is intended to layout the general automated test strategy for OpenLMIS..
 
 ## Test Strategy
 OpenLMIS, like many software projects, relies on testing to guide development and prevent regressions.  To effect this we've adopted a standard set of tools to write and execute our tests, and categorize them to understand what types of tests we have, who writes them, when they're written, run, and where they live.
