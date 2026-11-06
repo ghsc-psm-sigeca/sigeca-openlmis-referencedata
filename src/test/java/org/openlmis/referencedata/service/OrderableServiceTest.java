@@ -17,11 +17,14 @@ package org.openlmis.referencedata.service;
 
 import static org.hamcrest.Matchers.hasItem;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anySetOf;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.isNull;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -42,9 +45,14 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.runners.MockitoJUnitRunner;
 import org.openlmis.referencedata.domain.Orderable;
+import org.openlmis.referencedata.domain.TradeItem;
+import org.openlmis.referencedata.dto.OrderableDto;
+import org.openlmis.referencedata.dto.TradeItemClassificationDto;
 import org.openlmis.referencedata.exception.ValidationMessageException;
 import org.openlmis.referencedata.repository.OrderableRepository;
+import org.openlmis.referencedata.repository.TradeItemRepository;
 import org.openlmis.referencedata.repository.custom.OrderableRepositoryCustom.SearchParams;
+import org.openlmis.referencedata.util.OrderableBuilder;
 import org.openlmis.referencedata.util.Pagination;
 import org.openlmis.referencedata.web.QueryOrderableSearchParams;
 import org.slf4j.profiler.Profiler;
@@ -78,11 +86,20 @@ public class OrderableServiceTest {
   @Mock
   private Profiler profiler;
 
+  @Mock
+  private OrderableBuilder orderableBuilder;
+
+  @Mock
+  private TradeItemRepository tradeItemRepository;
+
   private UUID orderableId = UUID.randomUUID();
   private String programCode = "program-code";
   private List<Orderable> orderableList;
   private MultiValueMap<String, Object> searchParams = new LinkedMultiValueMap<>();
   private ZonedDateTime modifiedDate = ZonedDateTime.now(ZoneId.of(GMT)).withNano(0);
+  private UUID mockTradeItemId;
+  private TradeItem mockTradeItem;
+  private Orderable mockOrderable;
 
   @InjectMocks
   private OrderableService orderableService = new OrderableService();
@@ -306,5 +323,53 @@ public class OrderableServiceTest {
     // then
     verify(orderableRepository).findLatestModifiedDateByIds(queryMap.getIds());
     assertEquals(orderable2.getLastUpdated(), lastUpdated);
+  }
+
+  @Test
+  public void shouldCreateOrderableWithTradeItemWhenIdentifiersAreNull() {
+    mockTradeItemId = UUID.randomUUID();
+    mockTradeItem = TradeItem.newInstance(new TradeItem.Importer() {
+      @Override
+      public UUID getId() {
+        return mockTradeItemId;
+      }
+
+      @Override
+      public String getManufacturerOfTradeItem() {
+        return null;
+      }
+
+      @Override
+      public List<TradeItemClassificationDto> getClassifications() {
+        return null;
+      }
+
+      @Override
+      public String getGtin() {
+        return null;
+      }
+    });
+    when(tradeItemRepository.save(any(TradeItem.class))).thenReturn(mockTradeItem);
+
+    mockOrderable = mock(Orderable.class);
+
+    OrderableDto orderableDto = new OrderableDto();
+    orderableDto.setIdentifiers(null);
+
+    when(orderableBuilder.newOrderable(eq(orderableDto), (Orderable) isNull()))
+            .thenReturn(mockOrderable);
+    when(orderableRepository.save(mockOrderable)).thenReturn(mockOrderable);
+
+    Orderable result = orderableService.createOrderableWithTradeItem(orderableDto);
+
+    assertNotNull(result);
+    assertEquals(mockOrderable, result);
+
+    assertNotNull(orderableDto.getIdentifiers());
+    assertEquals(mockTradeItemId.toString(), orderableDto.getIdentifiers().get("tradeItem"));
+
+    verify(tradeItemRepository).save(any(TradeItem.class));
+    verify(orderableBuilder).newOrderable(orderableDto, null);
+    verify(orderableRepository).save(mockOrderable);
   }
 }

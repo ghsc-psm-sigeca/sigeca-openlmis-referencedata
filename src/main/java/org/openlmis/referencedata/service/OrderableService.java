@@ -18,12 +18,20 @@ package org.openlmis.referencedata.service;
 import java.sql.Timestamp;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import javax.validation.constraints.NotNull;
 
 import org.openlmis.referencedata.domain.Orderable;
+import org.openlmis.referencedata.domain.TradeItem;
+import org.openlmis.referencedata.dto.OrderableDto;
+import org.openlmis.referencedata.dto.TradeItemClassificationDto;
 import org.openlmis.referencedata.repository.OrderableRepository;
+import org.openlmis.referencedata.repository.TradeItemRepository;
+import org.openlmis.referencedata.util.OrderableBuilder;
 import org.openlmis.referencedata.web.QueryOrderableSearchParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +40,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class OrderableService {
@@ -42,6 +51,12 @@ public class OrderableService {
 
   @Autowired
   private OrderableRepository orderableRepository;
+
+  @Autowired
+  private TradeItemRepository tradeItemRepository;
+
+  @Autowired
+  private OrderableBuilder orderableBuilder;
 
   /**
    * Method returns all orderables with matched parameters.
@@ -114,6 +129,53 @@ public class OrderableService {
               ZoneId.of(GMT));
     }
     return null;
+  }
+
+  /**
+   * Method returns the new orderable created with trade item.
+   *
+   * @param orderableDto request param
+   * @return the Orderable that was created
+   */
+  @Transactional
+  public Orderable createOrderableWithTradeItem(OrderableDto orderableDto) {
+    TradeItem tradeItem = buildAndSaveTradeItem();
+
+    if (orderableDto.getIdentifiers() == null) {
+      orderableDto.setIdentifiers(new HashMap<>());
+    }
+
+    orderableDto.getIdentifiers().put("tradeItem", tradeItem.getId().toString());
+
+    Orderable orderable = orderableBuilder.newOrderable(orderableDto, null);
+
+    return orderableRepository.save(orderable);
+  }
+
+  private TradeItem buildAndSaveTradeItem() {
+    TradeItem tradeItem = TradeItem.newInstance(new TradeItem.Importer() {
+      @Override
+      public UUID getId() {
+        return null;
+      }
+
+      @Override
+      public String getManufacturerOfTradeItem() {
+        return "Angola";
+      }
+
+      @Override
+      public List<TradeItemClassificationDto> getClassifications() {
+        return Collections.emptyList();
+      }
+
+      @Override
+      public String getGtin() {
+        return null;
+      }
+    });
+
+    return tradeItemRepository.save(tradeItem);
   }
 
 }

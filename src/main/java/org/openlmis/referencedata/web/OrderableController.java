@@ -100,11 +100,8 @@ public class OrderableController extends BaseController {
     validator.validate(orderableDto, bindingResult);
     throwValidationMessageExceptionIfErrors(bindingResult);
 
-    profiler.start("BUILD_ORDERABLE");
-    Orderable orderable = orderableBuilder.newOrderable(orderableDto, null);
-
-    profiler.start("SAVE_ORDERABLE");
-    repository.save(orderable);
+    profiler.start("CREATE_ORDERABLE");
+    Orderable orderable = orderableService.createOrderableWithTradeItem(orderableDto);
 
     profiler.stop().log();
 
