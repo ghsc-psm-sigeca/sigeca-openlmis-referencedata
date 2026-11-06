@@ -12,8 +12,8 @@ compile-then-tests.shpipeline {
             steps {
                 script {
                     echo "Compiling and running tests for sigeca-api:"
-                    sh "chmod +x ./compile-then-tests.sh"
-                    sh "sh ./compile-then-tests.sh"
+                    sh "chmod +x ./build.sh"
+                    sh "sh ./build.sh"
                 }
             }
         }
