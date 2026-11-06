@@ -2,19 +2,10 @@ pipeline {
     agent any
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
         stage('Run CI') {
             steps {
-                script {
-                    echo "Compiling and running tests for reference-data:"
-                    sh "chmod +x ./compile-then-tests.sh"
-                    sh "sh ./compile-then-tests.sh"
-                }
+                echo 'Compiling and running tests for reference-data:'
+                sh 'sh ./compile-then-tests.sh'
             }
         }
     }
