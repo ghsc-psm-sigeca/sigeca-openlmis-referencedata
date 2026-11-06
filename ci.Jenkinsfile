@@ -1,4 +1,4 @@
-compile-then-tests.shpipeline {
+pipeline {
     agent any
 
     stages {
