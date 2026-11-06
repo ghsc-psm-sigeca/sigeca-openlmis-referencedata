@@ -11,9 +11,9 @@ pipeline {
         stage('Run CI') {
             steps {
                 script {
-                    echo "Compiling and running tests for sigeca-api:"
-                    sh "chmod +x ./build.sh"
-                    sh "sh ./build.sh"
+                    echo "Compiling and running tests for reference-data:"
+                    sh "chmod +x ./compile-then-tests.sh"
+                    sh "sh ./compile-then-tests.sh"
                 }
             }
         }
