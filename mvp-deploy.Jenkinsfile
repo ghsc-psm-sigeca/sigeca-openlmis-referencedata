@@ -42,31 +42,9 @@ pipeline {
         stage('Build Application') {
             steps {
                 script {
-                    def uid = sh(script: 'id -u', returnStdout: true).trim()
-                    def gid = sh(script: 'id -g', returnStdout: true).trim()
-                    def commandStatus = sh(
-                        script: """
-#!/bin/sh
-
-rm -rf node_modules build .gradle
-docker ps -q | xargs -r docker stop
-
-DOCKER_IMAGE="amazoncorretto:8u342-alpine3.16"
-DOCKER_CMD="apk add --no-cache npm freetype ttf-dejavu fontconfig su-exec && \\
-    npm config set loglevel verbose && \\
-    install -o ${uid} -g ${gid} -d build/resources/main && \\
-    chown -R ${uid}:${gid} /app && \\
-    su-exec ${uid}:${gid} sh -c ' \\
-        export HOME=/app && \\
-        npm install 2>&1 || { find /app/.npm/_logs -type f -print -exec cat {} \\; 2>/dev/null; exit 1; } && \\
-        ./gradlew clean build -x checkstyleMain -x checkstyleTest -x pmdMain -x pmdTest -x jacocoTestCoverageVerification --no-build-cache \\
-    '"
-
-docker run --rm --platform=linux/amd64 --user root --network=host -v "\$(pwd)":/app -w /app "\${DOCKER_IMAGE}" sh -c "\${DOCKER_CMD}"
-                            """,
-                            returnStdout: true
-                        ).trim()
-                    echo "Command status: ${commandStatus}"
+                    echo "Building Java application..."
+                    sh "sh ./compile-then-tests.sh"
+                    echo "Application build completed"
                 }
             }
         }

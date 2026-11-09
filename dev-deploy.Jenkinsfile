@@ -24,7 +24,7 @@ pipeline {
             steps {
                 script {
                     echo "Building Java application..."
-                    sh "sh ./build-clean.sh"
+                    sh "sh ./compile-then-tests.sh"
                     echo "Application build completed"
                 }
             }
