@@ -3,8 +3,8 @@
 # Deploy SIGECA API service
 source /home/ssm-user/deployment-scripts/deploy-common.sh
 
-SERVICE="sigeca-openlmis-referencedata"
-SERVICE_IMAGE="sigeca-openlmis-referencedata"
+SERVICE="referencedata"
+SERVICE_IMAGE="referencedata"
 NEW_VERSION=$1
 
 if [ -z "$NEW_VERSION" ]; then
