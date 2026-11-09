@@ -59,12 +59,18 @@ pipeline {
                     echo "Starting deployment to ${DEPLOYMENT_HOST}"
 
                     // Deploy via AWS SSM (secure, no SSH keys needed)
+                    // Ship the deploy script from the workspace to the host, so it does not need to be pre-installed
+                    def scriptBase64 = sh(
+                        script: "base64 < deploy-referencedata.sh | tr -d '\\n'",
+                        returnStdout: true
+                    ).trim()
+
                     def deployCommand = sh(
                         script: """
                             aws ssm send-command \\
                                 --instance-ids "${DEPLOYMENT_HOST}" \\
                                 --document-name "AWS-RunShellScript" \\
-                                --parameters 'commands=["bash", "cd /home/ssm-user", "/home/ssm-user/deployment-scripts/deploy-sigeca-api.sh ${env.IMAGE_TAG}"]' \\
+                                --parameters 'commands=["echo ${scriptBase64} | base64 -d > /tmp/deploy-referencedata.sh", "bash /tmp/deploy-referencedata.sh ${env.IMAGE_TAG}"]' \\
                                 --region ${AWS_REGION} \\
                                 --output text \\
                                 --query 'Command.CommandId'
