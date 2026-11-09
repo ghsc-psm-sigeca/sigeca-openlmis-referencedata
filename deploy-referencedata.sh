@@ -4,7 +4,7 @@
 source /home/ssm-user/deployment-scripts/deploy-common.sh
 
 SERVICE="referencedata"
-SERVICE_IMAGE="referencedata"
+SERVICE_IMAGE="sigeca-openlmis-referencedata"
 NEW_VERSION=$1
 
 if [ -z "$NEW_VERSION" ]; then
