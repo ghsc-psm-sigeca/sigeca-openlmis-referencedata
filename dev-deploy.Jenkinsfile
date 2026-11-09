@@ -24,19 +24,7 @@ pipeline {
             steps {
                 script {
                     echo "Building Java application..."
-                    sh '''
-                        touch .env
-                        docker-compose -f docker-compose.builder.yml run --rm builder \
-                            ./gradlew clean build integrationTest flywayTest
-
-                        for schema in schema pre.schema post.schema; do
-                            file="build/schema/${schema}.referencedata.sql"
-                            if [ ! -s "$file" ]; then
-                                echo "ERROR: Missing or empty schema export: $file. Check the integration test schema export logs." >&2
-                                exit 1
-                            fi
-                        done
-                    '''
+                    sh 'sh ./compile-then-tests.sh'
                     echo "Application build completed"
                 }
             }
