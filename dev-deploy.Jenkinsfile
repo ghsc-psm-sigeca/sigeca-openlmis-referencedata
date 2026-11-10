@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    parameters {
+        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Branch to build and deploy')
+    }
+
     environment {
         ECR_REGISTRY = '823413233235.dkr.ecr.us-east-1.amazonaws.com'
         ECR_REPOSITORY = 'sigeca-openlmis-referencedata'
@@ -11,15 +15,30 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
                 script {
+                    def branchToBuild = params.BRANCH_NAME?.trim() ? params.BRANCH_NAME : 'main'
+
+                    echo "Checkout out branch: ${branchToBuild}"
+
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "*/${branchToBuild}"]],
+                        doGenerateSubmoduleConfigurations: false,
+                        extensions: [[$class: 'CleanBeforeCheckout']],
+                        submoduleCfg: [],
+                        userRemoteConfigs: [[
+                            url: scm.userRemoteConfigs[0].url,
+                            credentialsId: scm.userRemoteConfigs[0].credentialsId,
+                            refspec: '+refs/heads/*:refs/remotes/origin/*'
+                        ]]
+                    ])
+
                     env.BUILD_DATE = sh(script: "date +%Y%m%d", returnStdout: true).trim()
                     env.IMAGE_TAG = "${env.BUILD_DATE}-${env.BUILD_NUMBER}"
                     echo "Building image with tag: ${env.IMAGE_TAG}"
                 }
             }
         }
-
         stage('Build Application') {
             steps {
                 script {
@@ -53,126 +72,6 @@ pipeline {
             }
         }
 
-        stage('Deploy to EC2') {
-            steps {
-                script {
-                    echo "Starting deployment to ${DEPLOYMENT_HOST}"
-
-                    // Deploy via AWS SSM (secure, no SSH keys needed)
-                    // Ship the deploy script from the workspace to the host, so it does not need to be pre-installed
-                    def scriptBase64 = sh(
-                        script: "base64 < deploy-referencedata.sh | tr -d '\\n'",
-                        returnStdout: true
-                    ).trim()
-
-                    def deployCommand = sh(
-                        script: """
-                            aws ssm send-command \\
-                                --instance-ids "${DEPLOYMENT_HOST}" \\
-                                --document-name "AWS-RunShellScript" \\
-                                --parameters 'commands=["echo ${scriptBase64} | base64 -d > /tmp/deploy-referencedata.sh", "bash /tmp/deploy-referencedata.sh ${env.IMAGE_TAG}"]' \\
-                                --region ${AWS_REGION} \\
-                                --output text \\
-                                --query 'Command.CommandId'
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    echo "SSM Command ID: ${deployCommand}"
-
-                    // Wait for command completion and check results
-                    def maxAttempts = 12  // 2 minutes max wait
-                    def attempt = 1
-                    def commandStatus = ""
-
-                    while (attempt <= maxAttempts) {
-                        echo "Checking deployment status (attempt ${attempt}/${maxAttempts})..."
-
-                        commandStatus = sh(
-                            script: """
-                                aws ssm get-command-invocation \\
-                                    --command-id ${deployCommand} \\
-                                    --instance-id ${DEPLOYMENT_HOST} \\
-                                    --region ${AWS_REGION} \\
-                                    --query 'Status' \\
-                                    --output text
-                            """,
-                            returnStdout: true
-                        ).trim()
-
-                        echo "Command status: ${commandStatus}"
-
-                        if (commandStatus == "Success") {
-                            echo "Deployment completed successfully"
-                            break
-                        } else if (commandStatus == "Failed") {
-                            // Get the error details
-                            def errorOutput = sh(
-                                script: """
-                                    aws ssm get-command-invocation \\
-                                        --command-id ${deployCommand} \\
-                                        --instance-id ${DEPLOYMENT_HOST} \\
-                                        --region ${AWS_REGION} \\
-                                        --query 'StandardErrorContent' \\
-                                        --output text
-                                """,
-                                returnStdout: true
-                            ).trim()
-
-                            error("Deployment failed: ${errorOutput}")
-                        }
-
-                        sleep(10)
-                        attempt++
-                    }
-
-                    if (commandStatus != "Success") {
-                        error("Deployment timed out or failed. Status: ${commandStatus}")
-                    }
-                }
-            }
-        }
-
-        stage('Health Check') {
-            steps {
-                script {
-                    echo "Waiting for service to be healthy..."
-                    sleep(5)
-
-                    def healthCheckPassed = false
-                    def maxHealthAttempts = 60
-                    def healthAttempt = 1
-
-                    while (healthAttempt <= maxHealthAttempts && !healthCheckPassed) {
-                        try {
-                            echo "Health check attempt ${healthAttempt}/${maxHealthAttempts}"
-
-                            def response = sh(
-                                script: "curl -f -s -o /dev/null -w '%{http_code}' https://app.ang-elmis-dev.net/ || echo 'failed'",
-                                returnStdout: true
-                            ).trim()
-
-                            if (response == "200") {
-                                echo "Health check passed - service is responding"
-                                healthCheckPassed = true
-                            } else {
-                                echo "Health check failed - HTTP status: ${response}"
-                                sleep(5)
-                                healthAttempt++
-                            }
-                        } catch (Exception e) {
-                            echo "Health check attempt failed: ${e.getMessage()}"
-                            sleep(5)
-                            healthAttempt++
-                        }
-                    }
-
-                    if (!healthCheckPassed) {
-                        error("Health check failed - service may not be responding correctly")
-                    }
-                }
-            }
-        }
     }
 
     post {
@@ -180,15 +79,13 @@ pipeline {
             cleanWs()
         }
         success {
-            echo "SUCCESS: Deployment of ${ECR_REPOSITORY}:${env.IMAGE_TAG} completed successfully"
-            echo "Application URL: https://app.ang-elmis-dev.net"
+            echo "SUCCESS: Pushing ${ECR_REPOSITORY}:${env.IMAGE_TAG} completed successfully"
             echo "Build: #${env.BUILD_NUMBER}"
             echo "Image Tag: ${env.IMAGE_TAG}"
         }
         failure {
-            echo "FAILED: Deployment of ${ECR_REPOSITORY}:${env.IMAGE_TAG} failed"
+            echo "FAILED: Pushing ${ECR_REPOSITORY}:${env.IMAGE_TAG} failed"
             echo "Check logs above for details"
-            echo "Consider rolling back to previous version if needed"
         }
     }
 }
