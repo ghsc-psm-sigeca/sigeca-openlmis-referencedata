@@ -16,18 +16,35 @@ log() {
 update_image_version() {
     local service=$1
     local new_version=$2
+    local key="OL_${service}_VERSION"
 
-    log "Updating ${service} to version ${new_version}"
+    log "Updating ${key} to version ${new_version}"
 
-    # Update environment file with new version
-    sed -i "s/OL_${service}_VERSION=.*/OL_${service}_VERSION=${new_version}/" $ENV_FILE
-
-    # Also update .env file if it exists
-    if [ -f "$COMPOSE_PATH/.env" ]; then
-        sed -i "s/OL_${service}_VERSION=.*/OL_${service}_VERSION=${new_version}/" $COMPOSE_PATH/.env
-    fi
+    for file in "$ENV_FILE" "$COMPOSE_PATH/.env"; do
+        [ -f "$file" ] || continue
+        if grep -q "^${key}=" "$file"; then
+            sed -i "s/^${key}=.*/${key}=${new_version}/" "$file"
+            log "Set ${key} in $file"
+        else
+            log "WARNING: ${key} not found in $file"
+        fi
+    done
 
     log "Updated ${service} version to ${new_version}"
+}
+
+verify_compose_image() {
+    local new_version=$1
+
+    # Compose resolves ${VAR} from .env, so this confirms the restart will use the new tag
+    if (cd "$COMPOSE_PATH" && docker-compose -f docker-compose.dev.yml config | grep -qF "$new_version"); then
+        log "Compose resolves image to version ${new_version}"
+        return 0
+    fi
+
+    log "ERROR: Compose does not resolve image to ${new_version}"
+    (cd "$COMPOSE_PATH" && docker-compose -f docker-compose.dev.yml config | grep "image:")
+    return 1
 }
 
 login_to_ecr() {
@@ -153,7 +170,11 @@ if ! verify_image_exists "$SERVICE_IMAGE" "$NEW_VERSION"; then
 fi
 
 # Update version and restart service
-update_image_version "SIGECA_OPENLMIS_REFERENCEDATA" "$NEW_VERSION"
+update_image_version "SIGECA_REFERENCEDATA" "$NEW_VERSION"
+if ! verify_compose_image "$NEW_VERSION"; then
+    log "DEPLOYMENT FAILED: Compose config does not use version $NEW_VERSION (check the OL_*_VERSION key in $COMPOSE_PATH/.env)"
+    exit 1
+fi
 restart_service "$SERVICE"
 
 # Health check
