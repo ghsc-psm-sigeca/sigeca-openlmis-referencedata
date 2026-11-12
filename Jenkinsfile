@@ -1,299 +1,194 @@
-#!/usr/bin/env groovy
-import hudson.tasks.test.AbstractTestResultAction
-
-properties([
-  [
-    $class: 'ThrottleJobProperty',
-    categories: ['pipeline'],
-    throttleEnabled: true,
-    throttleOption: 'category'
-  ]
-])
 pipeline {
-    agent none
-    options {
-        buildDiscarder(logRotator(
-            numToKeepStr: env.BRANCH_NAME.equals("master") ? '15' : '3',
-            daysToKeepStr: env.BRANCH_NAME.equals("master") || env.BRANCH_NAME.startsWith("rel-") ? '' : '7',
-            artifactDaysToKeepStr: env.BRANCH_NAME.equals("master") || env.BRANCH_NAME.startsWith("rel-") ? '' : '3',
-            artifactNumToKeepStr: env.BRANCH_NAME.equals("master") || env.BRANCH_NAME.startsWith("rel-") ? '' : '1'
-        ))
-        disableConcurrentBuilds()
-        skipStagesAfterUnstable()
-    }
+    agent any
+
     environment {
-        COMPOSE_PROJECT_NAME = "referencedata${BRANCH_NAME}"
+        ECR_REGISTRY = '823413233235.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPOSITORY = 'sigeca-openlmis-referencedata'
+        AWS_REGION = 'us-east-1'
+        DEPLOYMENT_HOST = 'i-04b006ea4291dc665'
     }
-    parameters {
-        string(name: 'contractTestsBranch', defaultValue: 'master', description: 'The branch of contract tests to checkout')
-    }
+
     stages {
-        stage('Preparation') {
-            agent any
+        stage('Checkout') {
             steps {
-                withCredentials([usernamePassword(
-                  credentialsId: "cad2f741-7b1e-4ddd-b5ca-2959d40f62c2",
-                  usernameVariable: "USER",
-                  passwordVariable: "PASS"
-                )]) {
-                    sh 'set +x'
-                    sh 'docker login -u $USER -p $PASS'
-                }
+                checkout scm
                 script {
-                    CURRENT_BRANCH = env.GIT_BRANCH // needed for agent-less stages
-                    def properties = readProperties file: 'gradle.properties'
-                    if (!properties.serviceVersion) {
-                        error("serviceVersion property not found")
-                    }
-                    VERSION = properties.serviceVersion
-                    STAGING_VERSION = properties.serviceVersion
-                    if (CURRENT_BRANCH != 'master' || (CURRENT_BRANCH == 'master' && !VERSION.endsWith("SNAPSHOT"))) {
-                        STAGING_VERSION += "-STAGING"
-                    }
-                    currentBuild.displayName += " - " + VERSION
+                    env.BUILD_DATE = sh(script: "date +%Y%m%d", returnStdout: true).trim()
+                    env.IMAGE_TAG = "${env.BUILD_DATE}-${env.BUILD_NUMBER}"
+                    echo "Building image with tag: ${env.IMAGE_TAG}"
                 }
             }
-            post {
-                failure {
-                    script {
-                        notifyAfterFailure()
+        }
+
+        stage('Build Application') {
+            steps {
+                script {
+                    echo "Building Java application..."
+                    sh 'sh ./compile-then-tests.sh'
+                    echo "Application build completed"
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "Building Docker image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${env.IMAGE_TAG}"
+                    dockerImage = docker.build("${ECR_REGISTRY}/${ECR_REPOSITORY}:${env.IMAGE_TAG}", "--no-cache .")
+                    dockerImage.tag("latest")
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                script {
+                    echo "Logging into ECR and pushing image"
+                    sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                    dockerImage.push("${env.IMAGE_TAG}")
+                    dockerImage.push("latest")
+                    echo "Successfully pushed ${ECR_REPOSITORY}:${env.IMAGE_TAG} to ECR"
+                    currentBuild.description = "${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                script {
+                    echo "Starting deployment to ${DEPLOYMENT_HOST}"
+
+                    // Deploy via AWS SSM (secure, no SSH keys needed)
+                    // Ship the deploy script from the workspace to the host, so it does not need to be pre-installed
+                    def scriptBase64 = sh(
+                        script: "base64 < deploy-referencedata.sh | tr -d '\\n'",
+                        returnStdout: true
+                    ).trim()
+
+                    def deployCommand = sh(
+                        script: """
+                            aws ssm send-command \\
+                                --instance-ids "${DEPLOYMENT_HOST}" \\
+                                --document-name "AWS-RunShellScript" \\
+                                --parameters 'commands=["echo ${scriptBase64} | base64 -d > /tmp/deploy-referencedata.sh", "bash /tmp/deploy-referencedata.sh ${env.IMAGE_TAG}"]' \\
+                                --region ${AWS_REGION} \\
+                                --output text \\
+                                --query 'Command.CommandId'
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "SSM Command ID: ${deployCommand}"
+
+                    // Wait for command completion and check results
+                    def maxAttempts = 12  // 2 minutes max wait
+                    def attempt = 1
+                    def commandStatus = ""
+
+                    while (attempt <= maxAttempts) {
+                        echo "Checking deployment status (attempt ${attempt}/${maxAttempts})..."
+
+                        commandStatus = sh(
+                            script: """
+                                aws ssm get-command-invocation \\
+                                    --command-id ${deployCommand} \\
+                                    --instance-id ${DEPLOYMENT_HOST} \\
+                                    --region ${AWS_REGION} \\
+                                    --query 'Status' \\
+                                    --output text
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Command status: ${commandStatus}"
+
+                        if (commandStatus == "Success") {
+                            echo "Deployment completed successfully"
+                            break
+                        } else if (commandStatus == "Failed") {
+                            // Get the error details
+                            def errorOutput = sh(
+                                script: """
+                                    aws ssm get-command-invocation \\
+                                        --command-id ${deployCommand} \\
+                                        --instance-id ${DEPLOYMENT_HOST} \\
+                                        --region ${AWS_REGION} \\
+                                        --query 'StandardErrorContent' \\
+                                        --output text
+                                """,
+                                returnStdout: true
+                            ).trim()
+
+                            error("Deployment failed: ${errorOutput}")
+                        }
+
+                        sleep(10)
+                        attempt++
+                    }
+
+                    if (commandStatus != "Success") {
+                        error("Deployment timed out or failed. Status: ${commandStatus}")
                     }
                 }
             }
         }
-        stage('Build') {
-            agent any
-            environment {
-                PATH = "/usr/local/bin/:$PATH"
-                STAGING_VERSION = "${STAGING_VERSION}"
-            }
+
+        stage('Health Check') {
             steps {
-                withCredentials([file(credentialsId: '8da5ba56-8ebb-4a6a-bdb5-43c9d0efb120', variable: 'ENV_FILE')]) {
-                    script {
+                script {
+                    echo "Waiting for service to be healthy..."
+                    sleep(5)
+
+                    def healthCheckPassed = false
+                    def maxHealthAttempts = 60
+                    def healthAttempt = 1
+
+                    while (healthAttempt <= maxHealthAttempts && !healthCheckPassed) {
                         try {
-                            sh( script: "./ci-buildImage.sh" )
-                            currentBuild.result = processTestResults('SUCCESS')
-                        }
-                        catch (exc) {
-                            currentBuild.result = processTestResults('FAILURE')
-                            if (currentBuild.result == 'FAILURE') {
-                                error(exc.toString())
-                            }
-                        }
-                    }
-                }
-            }
-            post {
-                success {
-                    archiveArtifacts artifacts: 'build/libs/*.jar,' +
-                            'build/resources/main/api-definition.html'
-                }
-                unstable {
-                    script {
-                        notifyAfterFailure()
-                    }
-                }
-                failure {
-                    script {
-                        notifyAfterFailure()
-                    }
-                }
-            }
-        }
-        stage('Build demo-data') {
-            when {
-                expression {
-                    return CURRENT_BRANCH == 'master'
-                }
-            }
-            steps {
-                build job: "OpenLMIS-3.x-build-demo-data-pipeline"
-            }
-            post {
-                failure {
-                    script {
-                        notifyAfterFailure()
-                    }
-                }
-            }
-        }
-        stage('Deploy to test') {
-            when {
-                expression {
-                    return CURRENT_BRANCH == 'master' && VERSION.endsWith("SNAPSHOT")
-                }
-            }
-            steps {
-                build job: 'OpenLMIS-referencedata-deploy-to-test', wait: false
-            }
-            post {
-                failure {
-                    script {
-                        notifyAfterFailure()
-                    }
-                }
-            }
-        }
-        stage('Parallel: Sonar analysis and contract tests') {
-            parallel {
-                stage('Sonar analysis') {
-                    agent any
-                    environment {
-                        PATH = "/usr/local/bin/:$PATH"
-                    }
-                    steps {
-                        withSonarQubeEnv('Sonar OpenLMIS') {
-                            withCredentials([string(credentialsId: 'SONAR_LOGIN', variable: 'SONAR_LOGIN'), string(credentialsId: 'SONAR_PASSWORD', variable: 'SONAR_PASSWORD')]) {
-                                script {
-                                    sh(script: "./ci-sonarAnalysis.sh")
+                            echo "Health check attempt ${healthAttempt}/${maxHealthAttempts}"
 
-                                    // workaround: Sonar plugin retrieves the path directly from the output
-                                    sh 'echo "Working dir: ${WORKSPACE}/build/sonar"'
-                                }
+                            def response = sh(
+                                script: "curl -f -s -o /dev/null -w '%{http_code}' https://app.ang-elmis-dev.net/ || echo 'failed'",
+                                returnStdout: true
+                            ).trim()
+
+                            if (response == "200") {
+                                echo "Health check passed - service is responding"
+                                healthCheckPassed = true
+                            } else {
+                                echo "Health check failed - HTTP status: ${response}"
+                                sleep(5)
+                                healthAttempt++
                             }
-                        }
-                        timeout(time: 1, unit: 'HOURS') {
-                            script {
-                                def gate = waitForQualityGate()
-                                if (gate.status != 'OK') {
-                                    echo 'Quality Gate FAILED'
-                                    currentBuild.result = 'UNSTABLE'
-                                }
-                            }
+                        } catch (Exception e) {
+                            echo "Health check attempt failed: ${e.getMessage()}"
+                            sleep(5)
+                            healthAttempt++
                         }
                     }
-                    post {
-                        unstable {
-                            script {
-                                notifyAfterFailure()
-                            }
-                        }
-                        failure {
-                            script {
-                                notifyAfterFailure()
-                            }
-                        }
-                    }
-                }
-                stage('Contract tests') {
-                    steps {
-                        build job: "OpenLMIS-contract-tests-pipeline/${params.contractTestsBranch}", propagate: true, wait: true,
-                        parameters: [
-                            string(name: 'serviceName', value: 'referencedata'),
-                            text(name: 'customEnv', value: "OL_REFERENCEDATA_VERSION=${STAGING_VERSION}")
-                        ]
-                        build job: "OpenLMIS-contract-tests-pipeline/${params.contractTestsBranch}", propagate: true, wait: true,
-                        parameters: [
-                            string(name: 'serviceName', value: 'fulfillment'),
-                            text(name: 'customEnv', value: "OL_REFERENCEDATA_VERSION=${STAGING_VERSION}")
-                        ]
-                        build job: "OpenLMIS-contract-tests-pipeline/${params.contractTestsBranch}", propagate: true, wait: true,
-                        parameters: [
-                            string(name: 'serviceName', value: 'hapifhir'),
-                            text(name: 'customEnv', value: "OL_REFERENCEDATA_VERSION=${STAGING_VERSION}")
-                        ]
-                    }
-                    post {
-                        failure {
-                            script {
-                                notifyAfterFailure()
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        stage('ERD generation') {
-            agent {
-                node {
-                    label 'master'
-                }
-            }
-            environment {
-                PATH = "/usr/local/bin/:$PATH"
-            }
-            steps {
-                dir('erd') {
-                    sh(script: "../ci-erdGeneration.sh")
-                    archiveArtifacts artifacts: 'erd-referencedata.zip'
-                }
-            }
-            post {
-                failure {
-                    script {
-                        notifyAfterFailure()
-                    }
-                }
-            }
-        }
-        stage('Push image') {
-            agent any
-            when {
-                expression {
-                    env.GIT_BRANCH =~ /rel-.+/ || (env.GIT_BRANCH == 'master' && !VERSION.endsWith("SNAPSHOT"))
-                }
-            }
-            steps {
-                sh "docker pull openlmis/referencedata:${STAGING_VERSION}"
-                sh "docker tag openlmis/referencedata:${STAGING_VERSION} openlmis/referencedata:${VERSION}"
-                sh "docker push openlmis/referencedata:${VERSION}"
-            }
-            post {
-                success {
-                    script {
-                        if (!VERSION.endsWith("SNAPSHOT")) {
-                            currentBuild.setKeepLog(true)
-                        }
-                    }
-                }
-                failure {
-                    script {
-                        notifyAfterFailure()
+
+                    if (!healthCheckPassed) {
+                        error("Health check failed - service may not be responding correctly")
                     }
                 }
             }
         }
     }
+
     post {
-        fixed {
-            script {
-                BRANCH = "${env.GIT_BRANCH}".trim()
-                if (BRANCH.equals("master") || BRANCH.startsWith("rel-")) {
-                    slackSend color: 'good', message: "${env.JOB_NAME} - #${env.BUILD_NUMBER} Back to normal"
-                }
-            }
+        always {
+            cleanWs()
+        }
+        success {
+            echo "SUCCESS: Deployment of ${ECR_REPOSITORY}:${env.IMAGE_TAG} completed successfully"
+            echo "Application URL: https://app.ang-elmis-dev.net"
+            echo "Build: #${env.BUILD_NUMBER}"
+            echo "Image Tag: ${env.IMAGE_TAG}"
+        }
+        failure {
+            echo "FAILED: Deployment of ${ECR_REPOSITORY}:${env.IMAGE_TAG} failed"
+            echo "Check logs above for details"
+            echo "Consider rolling back to previous version if needed"
         }
     }
-}
-
-def notifyAfterFailure() {
-    messageColor = 'danger'
-    if (currentBuild.result == 'UNSTABLE') {
-        messageColor = 'warning'
-    }
-    BRANCH = "${env.GIT_BRANCH}".trim()
-    if (BRANCH.equals("master") || BRANCH.startsWith("rel-")) {
-        slackSend color: "${messageColor}", message: "${env.JOB_NAME} - #${env.BUILD_NUMBER} ${env.STAGE_NAME} ${currentBuild.result} (<${env.BUILD_URL}|Open>)"
-    }
-    emailext subject: "${env.JOB_NAME} - #${env.BUILD_NUMBER} ${env.STAGE_NAME} ${currentBuild.result}",
-        body: """<p>${env.JOB_NAME} - #${env.BUILD_NUMBER} ${env.STAGE_NAME} ${currentBuild.result}</p><p>Check console <a href="${env.BUILD_URL}">output</a> to view the results.</p>""",
-        recipientProviders: [[$class: 'CulpritsRecipientProvider'], [$class: 'DevelopersRecipientProvider']]
-}
-
-def processTestResults(status) {
-    checkstyle pattern: '**/build/reports/checkstyle/*.xml'
-    pmd pattern: '**/build/reports/pmd/*.xml'
-    junit '**/build/test-results/*/*.xml'
-
-    AbstractTestResultAction testResultAction = currentBuild.rawBuild.getAction(AbstractTestResultAction.class)
-    if (testResultAction != null) {
-        failuresCount = testResultAction.failCount
-        echo "Failed tests count: ${failuresCount}"
-        if (failuresCount > 0) {
-            echo "Setting build unstable due to test failures"
-            status = 'UNSTABLE'
-        }
-    }
-
-    return status
 }
