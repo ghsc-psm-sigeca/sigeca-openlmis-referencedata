@@ -9,6 +9,14 @@ SERVICE="referencedata"
 SERVICE_IMAGE="sigeca-openlmis-referencedata"
 NEW_VERSION=$1
 
+# SSM runs with a minimal PATH, so include the usual binary locations
+export PATH="$PATH:/usr/local/bin:/usr/bin:/bin"
+if command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE="docker-compose"
+else
+    COMPOSE="docker compose"
+fi
+
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [DEPLOY] $1"
 }
@@ -37,13 +45,13 @@ verify_compose_image() {
     local new_version=$1
 
     # Compose resolves ${VAR} from .env, so this confirms the restart will use the new tag
-    if (cd "$COMPOSE_PATH" && docker-compose -f docker-compose.dev.yml config | grep -qF "$new_version"); then
+    if (cd "$COMPOSE_PATH" && $COMPOSE -f docker-compose.dev.yml config | grep -qF "$new_version"); then
         log "Compose resolves image to version ${new_version}"
         return 0
     fi
 
     log "ERROR: Compose does not resolve image to ${new_version}"
-    (cd "$COMPOSE_PATH" && docker-compose -f docker-compose.dev.yml config | grep "image:")
+    (cd "$COMPOSE_PATH" && $COMPOSE -f docker-compose.dev.yml config | grep "image:")
     return 1
 }
 
@@ -63,11 +71,11 @@ restart_service() {
     login_to_ecr
 
     # Stop and remove the specific service
-    docker-compose -f docker-compose.dev.yml stop $service || true
-    docker-compose -f docker-compose.dev.yml rm -f $service || true
+    $COMPOSE -f docker-compose.dev.yml stop $service || true
+    $COMPOSE -f docker-compose.dev.yml rm -f $service || true
 
     # Start the service with new image
-    docker-compose -f docker-compose.dev.yml up -d $service
+    $COMPOSE -f docker-compose.dev.yml up -d $service
 
     log "Service $service restarted successfully"
 }
